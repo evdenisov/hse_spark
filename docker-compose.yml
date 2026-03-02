@@ -1,125 +1,94 @@
 services:
+  # --- HDFS Components ---
   namenode:
     image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
     container_name: namenode
-    restart: always
-    ports:
-      - 9870:9870
-      - 9010:9000
-    networks:
-      - spark-network
     volumes:
       - hadoop_namenode:/hadoop/dfs/name
-      - ./data:/tmp/data
     environment:
       - CLUSTER_NAME=test
-      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
     env_file:
       - ./hadoop.env
-    ulimits:
-      nofile:
-        soft: 1024
-        hard: 65535
-      memlock:
-        soft: -1  # Unlimited
-        hard: -1  # Unlimited
+    ports:
+      - "9870:9870"
+      - "9000:9000"
 
   datanode:
     image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
     container_name: datanode
-    restart: always
-    volumes:
-      - hadoop_datanode:/hadoop/dfs/data
-    environment:
-      SERVICE_PRECONDITION: "namenode:9870"
-      CORE_CONF_fs_defaultFS: hdfs://namenode:9000
-    ports:
-      - "9864:9864"
-    networks:
-      - spark-network
-    env_file:
-      - ./hadoop.env
-    ulimits:
-      nofile:
-        soft: 1024
-        hard: 65535
-      memlock:
-        soft: -1  # Unlimited
-        hard: -1  # Unlimited
-    
-  spark-master:
-    image: bitnami/spark:3.5.0
-    container_name: spark-master
-    environment:
-      - SPARK_MODE=master
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_RPC_ENCRYPTION_ENABLED=no
-      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
-      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
-    ports:
-      - "8080:8080" # Spark Web UI
-      - "7077:7077" # Spark Master Port
-    networks:
-      - spark-network
-    volumes:
-      - ./apps:/opt/bitnami/spark/work
-
-  spark-worker-1:
-    image: bitnami/spark:3.5.0
-    container_name: spark-worker-1
-    environment:
-      - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark://spark-master:7077
-      - SPARK_WORKER_MEMORY=1G
-      - SPARK_WORKER_CORES=1
-      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
-    depends_on:
-      - spark-master
-    networks:
-      - spark-network
-
-  spark-worker-2:
-    image: bitnami/spark:3.5.0
-    container_name: spark-worker-2
-    environment:
-      - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark://spark-master:7077
-      - SPARK_WORKER_MEMORY=1G
-      - SPARK_WORKER_CORES=1
-      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
-    depends_on:
-      - spark-master
-    networks:
-      - spark-network
-
-  hue: 
-    image: gethue/hue
-    container_name: hue
-    ports:
-      - 8000:8888  # WebUI
     depends_on:
       - namenode
     volumes:
-      - ./conf/hue.ini:/usr/share/hue/desktop/conf/z-hue.ini
-    networks:
-      - spark-network
+      - hadoop_datanode:/hadoop/dfs/data
+    env_file:
+      - ./hadoop.env
 
+  # --- Spark Components - Исправленная версия ---
+  spark-master:
+    image: jupyter/pyspark-notebook:spark-3.5.0
+    container_name: spark-master
+    restart: always
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+      - "10022:22"
+    command: >
+      start.sh 
+      /usr/local/spark/bin/spark-class 
+      org.apache.spark.deploy.master.Master 
+      --host spark-master 
+      --port 7077 
+      --webui-port 8080
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+      - SPARK_MASTER_HOST=spark-master
+      - SPARK_MASTER_PORT=7077
+      - SPARK_MASTER_WEBUI_PORT=8080
+    volumes:
+      - ./apps:/home/jovyan/work/apps
+      - ./data:/home/jovyan/work/data
+
+  spark-worker:
+    image: jupyter/pyspark-notebook:spark-3.5.0
+    container_name: spark-worker-1
+    restart: always
+    depends_on:
+      - spark-master
+    command: >
+      start.sh 
+      /usr/local/spark/bin/spark-class 
+      org.apache.spark.deploy.worker.Worker 
+      spark://spark-master:7077 
+      --webui-port 8081
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2g
+      - PYSPARK_PYTHON=/opt/conda/bin/python
+      - PYSPARK_DRIVER_PYTHON=/opt/conda/bin/python
+      - SPARK_WORKER_DIR=/tmp/spark-work  # Используем /tmp директорию
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./apps:/home/jovyan/work/apps
+      - ./data:/home/jovyan/work/data
+    user: root  # Запускаем от root чтобы избежать проблем с правами
+
+  # --- Jupyter & PySpark ---
   jupyter:
-    image: jupyter/pyspark-notebook
+    image: jupyter/pyspark-notebook:spark-3.5.0
     container_name: jupyter
     ports:
-      - 8888:8888
-    profiles:
-      - jupyter
+      - "8888:8888"
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - GRANT_SUDO=yes
+      - CHOWN_HOME=yes
+    user: root
     volumes:
       - ./notebooks:/home/jovyan/work
-    networks:
-      - spark-network
-      
-networks:
-  spark-network:
-    driver: bridge
+      - ./data:/home/jovyan/data
+    command: start-notebook.sh --NotebookApp.token='' --NotebookApp.password=''
 
 volumes:
   hadoop_namenode:
